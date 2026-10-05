@@ -1,19 +1,63 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { StatusFilter } from "./types";
 import { useTaskSearch } from "./useTaskSearch";
-import { pageOf } from "./query";
+import { pageOf, readQuery, writeQuery } from "./query";
+
 export default function App() {
-  const [draft, setDraft] = useState("");
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("ALL");
-  const [page, setPage] = useState(1);
-  const { tasks, loading, error } = useTaskSearch(q, status);
+  // 首次挂载时从 URL 恢复（lazy 初始化，只读一次 location.search）。
+  const [initial] = useState(() => readQuery(window.location.search));
+  const [draft, setDraft] = useState(initial.q);
+  const [q, setQ] = useState(initial.q);
+  const [status, setStatus] = useState<StatusFilter>(initial.status);
+  const [page, setPage] = useState(initial.page);
+  const { tasks, loading, error, isCurrent } = useTaskSearch(q, status);
   const view = pageOf(tasks, page);
+
   function search(e: React.FormEvent) {
     e.preventDefault();
-    setQ(draft.trim());
+    const next = draft.trim();
+    setQ(next);
     setPage(1);
+    // 提交查询：页码回 1，并 replace 当前历史项。
+    writeQuery({ q: next, status, page: 1 }, "replace");
   }
+
+  function changeStatus(next: StatusFilter) {
+    setStatus(next);
+    setPage(1);
+    // 筛选变化：页码回 1，push 一个新的历史项。
+    writeQuery({ q, status: next, page: 1 }, "push");
+  }
+
+  function goToPage(next: number) {
+    setPage(next);
+    // 翻页：push 一个新的历史项。
+    writeQuery({ q, status, page: next }, "push");
+  }
+
+  // 浏览器前进/后退：从 URL 恢复输入框、筛选与页码；
+  // q/status 变化会由 useTaskSearch 自动发起对应查询。
+  useEffect(() => {
+    function onPopState() {
+      const next = readQuery(window.location.search);
+      setDraft(next.q);
+      setQ(next.q);
+      setStatus(next.status);
+      setPage(next.page);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // 结果钳制：只有「当前查询成功」后才按结果页数纠正越界页码；
+  // 加载中或出错时不动页码，避免用空列表/上一次结果提前把页码改成 1。
+  // 规范化越界页码使用 replace，不新增历史项。
+  useEffect(() => {
+    if (!isCurrent || error || page <= view.pages) return;
+    setPage(view.pages);
+    writeQuery({ q, status, page: view.pages }, "replace");
+  }, [isCurrent, error, page, view.pages, q, status]);
+
   return (
     <>
       <header>
@@ -37,10 +81,7 @@ export default function App() {
             状态
             <select
               value={status}
-              onChange={(e) => {
-                setStatus(e.target.value as StatusFilter);
-                setPage(1);
-              }}
+              onChange={(e) => changeStatus(e.target.value as StatusFilter)}
             >
               <option value="ALL">全部状态</option>
               <option value="TODO">待办</option>
@@ -85,10 +126,7 @@ export default function App() {
           )}
         </section>
         <nav className="pager" aria-label="分页">
-          <button
-            disabled={loading || view.current === 1}
-            onClick={() => setPage(view.current - 1)}
-          >
+          <button disabled={loading || view.current === 1} onClick={() => goToPage(view.current - 1)}>
             上一页
           </button>
           <span>
@@ -96,7 +134,7 @@ export default function App() {
           </span>
           <button
             disabled={loading || view.current === view.pages}
-            onClick={() => setPage(view.current + 1)}
+            onClick={() => goToPage(view.current + 1)}
           >
             下一页
           </button>
